@@ -1,0 +1,289 @@
+---
+title: "Price Prediction of Volvo Cars"
+author: "GAYATHREE BASARAHALLI"
+date: "2025-04-21"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+
+```{r}
+# Load libraries
+library(ggcorrplot)
+library(lubridate)
+library(caret)
+library(glmnet)
+library(tidyverse)
+library(Amelia)
+library(car)
+```
+
+
+```{r}
+data <- read.csv2("D:\\EC utbildning\\R\\PersonalCarData-Volvo.csv", stringsAsFactors = FALSE)
+summary(data)
+head(data)
+dim(data)
+names(data)
+```
+
+```{r}
+# Convert 'Dateofregistration' to Date object and extract 'RegYear' and 'RegMonth'
+data$Dateofregistration <- mdy(data$Dateofregistration)
+data$RegYear <- year(data$Dateofregistration)
+data$RegMonth <- month(data$Dateofregistration)
+```
+
+```{r}
+# Remove unnecessary columns
+data <- data %>% select(-c(Brand,Colour, Dateofregistration, RegMonth))
+
+# Check initial dimensions of the data
+dim(data)
+
+# Drop rows with any missing values (NA)
+data_clean <- data %>% drop_na()
+
+# Remove rows with "Mileage" equal to "00 000"
+data_clean <- data_clean[!(data_clean$Mileage == "00 000"), ]
+
+# Check for missing values in the cleaned data
+summary(is.na(data_clean))
+dim(data_clean)
+colSums(is.na(data_clean))
+
+```
+
+```{r}
+# Convert categorical variables to factors
+data_clean$Private.Company <- as.factor(data_clean$Private.Company)
+data_clean$Fuel <- as.factor(data_clean$Fuel)
+data_clean$Transmission <- as.factor(data_clean$Transmission)
+data_clean$Cartype <- as.factor(data_clean$Cartype)
+data_clean$Drivetype <- as.factor(data_clean$Drivetype)
+data_clean$Model <- as.factor(data_clean$Model)
+data_clean$Region <- as.factor(data_clean$Region)
+
+# Convert numeric variables to appropriate types
+data_clean$Sellingprice <- as.numeric(data_clean$Sellingprice)
+
+```
+
+```{r}
+
+# Clean 'Mileage' by removing non-numeric characters and converting it to numeric
+data_clean$Mileage <- as.numeric(gsub("[^0-9]", "", data_clean$Mileage))
+
+# Clean 'Horsepower' by removing non-numeric characters and converting it to numeric
+data_clean$Horsepower <- as.numeric(gsub("[^0-9]", "", data_clean$Horsepower))
+
+# Check for any remaining missing values
+data_clean %>% filter(if_any(everything(), is.na))
+
+# Remove rows where 'Sellingprice' or 'Mileage' is missing
+data_clean <- data_clean %>% filter(!is.na(Sellingprice))
+data_clean <- data_clean %>% filter(!is.na(Mileage))
+
+# Check for missing values again after cleaning
+colSums(is.na(data_clean))
+
+# Optionally, remove rows where Mileage is zero (or any other value you don't want to keep)
+data_clean <- data_clean[!(data_clean$Mileage == 0), ]
+
+# View summary of the cleaned data
+summary(data_clean)
+
+# Final dimensions of the cleaned data
+dim(data_clean)
+```
+
+```{r}
+# Set seed for reproducibility
+set.seed(123)
+
+# Split the data into training, validation, and test sets
+split_train_val <- createDataPartition(data_clean$Sellingprice, p = 0.7, list = FALSE)
+
+train_data <- data_clean[split_train_val, ]
+remaining_data <- data_clean[-split_train_val, ]
+split_val_test <- createDataPartition(remaining_data$Sellingprice, p = 0.5, list = FALSE)
+validation_data <- remaining_data[split_val_test, ]
+test_data <- remaining_data[-split_val_test, ]
+
+# Check dimensions
+dim(train_data)
+dim(validation_data)
+dim(test_data)
+
+```
+
+```{r}
+# Check for outliers using boxplots
+ggplot(data_clean, aes(x = Sellingprice)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  ggtitle("Distribution of Selling Price") +
+  theme_minimal()
+
+# Correlation matrix for numerical variables
+corr_matrix <- cor(data_clean %>% select_if(is.numeric))
+ggcorrplot(corr_matrix, hc.order = TRUE, type = "lower", lab = TRUE)
+colnames(data_clean)
+
+```
+
+```{r}
+# Log transformation of the target variable(Sellingprice) in the training, validation, and test datasets
+train_data$log_Sellingprice <- log(train_data$Sellingprice + 1)  # Adding 1 to avoid log(0)
+validation_data$log_Sellingprice <- log(validation_data$Sellingprice + 1)
+test_data$log_Sellingprice <- log(test_data$Sellingprice + 1)
+
+# Convert data to a design matrix with all predictors (no intercept)
+x_train_all <- model.matrix(log_Sellingprice ~ . - 1, data = train_data)  # Remove intercept
+x_validation_all <- model.matrix(log_Sellingprice ~ . - 1, data = validation_data)
+x_test_all <- model.matrix(log_Sellingprice ~ . - 1, data = test_data)
+colnames(data_clean)
+
+```
+
+```{r}
+# Define the full model formula (with log-transformed target variable)
+model_formula <- log_Sellingprice ~ Private.Company + Fuel + Transmission +
+                 Mileage + Modelyear + Cartype + Drivetype +
+                 Model + Horsepower + Region + RegYear
+
+# Fit the full linear model using log-transformed target
+full_model <- lm(model_formula, data = train_data)
+```
+
+
+```{r}
+# Perform stepwise regression (both forward and backward)
+stepwise_model <- step(full_model, direction = "both")
+
+# Summary of the model after stepwise selection
+model_summary <- summary(stepwise_model)
+
+# Display R-squared and Adjusted R-squared
+cat("R-squared: ", model_summary$r.squared, "\n")
+cat("Adjusted R-squared: ", model_summary$adj.r.squared, "\n")
+
+# Check VIF values for the final selected model (stepwise regression)
+vif_values <- vif(stepwise_model)
+cat("VIF values:\n")
+print(vif_values)
+
+
+
+```
+
+
+```{r}
+
+# Ensure consistency in factor levels between training, validation, and test sets
+categorical_vars <- c("Model", "Fuel")  # Add all categorical variable names here
+for (var in categorical_vars) {
+  train_data[[var]] <- factor(train_data[[var]])
+  validation_data[[var]] <- factor(validation_data[[var]], levels = levels(train_data[[var]]))
+  test_data[[var]] <- factor(test_data[[var]], levels = levels(train_data[[var]]))
+}
+```
+
+```{r}
+
+# Predictions on validation data
+predictions_validation_log <- predict(stepwise_model, newdata = validation_data)
+predictions_validation <- exp(predictions_validation_log) - 1
+
+# Predictions on test data
+predictions_test_log <- predict(stepwise_model, newdata = test_data)
+predictions_test <- exp(predictions_test_log) - 1
+
+# Print a summary of predictions
+cat("Predictions on validation set (first few values): \n")
+print(head(predictions_validation))
+
+cat("Predictions on test set (first few values): \n")
+print(head(predictions_test))
+
+
+```
+
+
+```{r}
+# Function to calculate RMSE and R-squared
+calculate_metrics <- function(predictions, actual_values) {
+  rmse <- sqrt(mean((predictions - actual_values)^2))
+  ss_total <- sum((actual_values - mean(actual_values))^2)
+  ss_residual <- sum((predictions - actual_values)^2)
+  r_squared <- 1 - (ss_residual / ss_total)
+  return(list(rmse = rmse, r_squared = r_squared))
+}
+
+# Validation metrics
+validation_metrics <- calculate_metrics(predictions_validation, validation_data$Sellingprice)
+cat("RMSE on validation set: ", validation_metrics$rmse, "\n")
+cat("R-squared on validation set: ", validation_metrics$r_squared, "\n")
+
+# Remove NA values from predictions and actual test values
+predictions_test_clean <- predictions_test[!is.na(predictions_test)]
+actual_values_test_clean <- test_data$Sellingprice[!is.na(predictions_test)]
+
+# Recalculate metrics on the cleaned data
+test_metrics <- calculate_metrics(predictions_test_clean, actual_values_test_clean)
+cat("RMSE on test set: ", test_metrics$rmse, "\n")
+cat("R-squared on test set: ", test_metrics$r_squared, "\n")
+
+
+
+```
+
+
+
+
+
+```{r}
+# Generate confidence and prediction intervals on the log scale
+conf_intervals_test <- predict(stepwise_model, newdata = test_data, interval = "confidence", level = 0.95)
+pred_intervals_test <- predict(stepwise_model, newdata = test_data, interval = "prediction", level = 0.95)
+
+# Convert back to original scale (reverse log transformation)
+conf_intervals_df <- data.frame(
+  Index = 1:nrow(test_data),
+  Fit = exp(conf_intervals_test[, "fit"]) - 1,
+  CI_Lower = exp(conf_intervals_test[, "lwr"]) - 1,
+  CI_Upper = exp(conf_intervals_test[, "upr"]) - 1
+)
+
+pred_intervals_df <- data.frame(
+  Index = 1:nrow(test_data),
+  PI_Lower = exp(pred_intervals_test[, "lwr"]) - 1,
+  PI_Upper = exp(pred_intervals_test[, "upr"]) - 1
+)
+
+# Combine CI and PI into one data frame
+plot_df <- cbind(conf_intervals_df, pred_intervals_df[, c("PI_Lower", "PI_Upper")])
+
+# Plot using ggplot2
+library(ggplot2)
+
+ggplot(plot_df, aes(x = Index)) +
+  geom_line(aes(y = Fit), color = "blue", linewidth = 1) +
+  geom_ribbon(aes(ymin = CI_Lower, ymax = CI_Upper), fill = "skyblue", alpha = 0.4, show.legend = TRUE) +
+  geom_ribbon(aes(ymin = PI_Lower, ymax = PI_Upper), fill = "red", alpha = 0.2, show.legend = TRUE) +
+  labs(
+    title = "Prediction vs Confidence Intervals for Selling Price",
+    subtitle = "Blue line: Predicted price | Skyblue: 95% Confidence Interval | Red: 95% Prediction Interval",
+    x = "Index (Test Observations)",
+    y = "Predicted Selling Price (SEK)"
+  ) +
+  theme_minimal(base_size = 13)
+
+```
+
+
+
+
+
+
